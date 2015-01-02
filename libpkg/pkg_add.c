@@ -141,11 +141,11 @@ do_extract(struct archive *a, struct archive_entry *ae, const char *location,
 	int	retcode = EPKG_OK;
 	int	ret = 0, cur_file = 0;
 	char	path[MAXPATHLEN], pathname[MAXPATHLEN], rpath[MAXPATHLEN];
-	const char *name;
 	struct stat st;
+	const struct stat *aest;
 	bool renamed = false;
-	const struct pkg_file *lf, *rf;
-	struct pkg_config_file *lcf, *rcf;
+	const struct pkg_file *rf;
+	struct pkg_config_file *rcf;
 	struct sbuf *newconf;
 	bool automerge = pkg_object_bool(pkg_config_get("AUTOMERGE"));
 
@@ -156,7 +156,6 @@ do_extract(struct archive *a, struct archive_entry *ae, const char *location,
 	if (nfiles == 0)
 		return (EPKG_OK);
 
-	pkg_get(pkg, PKG_NAME, &name);
 	pkg_emit_extract_begin(pkg);
 	pkg_emit_progress_start(NULL);
 
@@ -165,36 +164,37 @@ do_extract(struct archive *a, struct archive_entry *ae, const char *location,
 	do {
 		ret = ARCHIVE_OK;
 		sbuf_clear(newconf);
-		lf = NULL;
 		rf = NULL;
-		lcf = NULL;
 		rcf = NULL;
 		pkg_absolutepath(archive_entry_pathname(ae), path, sizeof(path));
-		snprintf(pathname, sizeof(pathname), "%s/%s",
-		    location ? location : "",
+		snprintf(pathname, sizeof(pathname), "%s%s%s",
+		    location ? location : "", *path == '/' ? "" : "/",
 		    path
 		);
 		strlcpy(rpath, pathname, sizeof(rpath));
 
-		if (lstat(rpath, &st) != -1 && !S_ISDIR(st.st_mode)) {
-			/* check is the old version is the same as the new version */
-			if (S_ISREG(st.st_mode) && st.st_size == archive_entry_size(ae)) {
-				char localsum[SHA256_DIGEST_LENGTH + 2 + 1];
-				if (sha256_file(rpath, localsum) == EPKG_OK) {
-					HASH_FIND_STR(pkg->files, path, rf);
-					if (strcmp(localsum, rf->sum) == 0) {
-						pkg_debug(2, "Do not extract identical file");
+		if (lstat(rpath, &st) != -1) {
+			/*
+			 * We have an existing file on the path, so handle it
+			 */
+			aest = archive_entry_stat(ae);
+			if (!S_ISDIR(aest->st_mode)) {
+				pkg_debug(2, "Old version found, renaming");
+				pkg_add_file_random_suffix(rpath, sizeof(rpath), 12);
+				renamed = true;
+			}
+
+			if (!S_ISDIR(st.st_mode) && S_ISDIR(aest->st_mode)) {
+				if (S_ISLNK(st.st_mode)) {
+					if (stat(rpath, &st) == -1) {
+						pkg_emit_error("Dead symlink %s", rpath);
+					} else {
+						pkg_debug(2, "Directory is a symlink, use it");
 						pkg_emit_progress_tick(cur_file++, nfiles);
 						continue;
 					}
 				}
 			}
-			/*
-			 * We have an existing file on the path, so handle it
-			 */
-			pkg_debug(2, "Old version found, renaming");
-			pkg_add_file_random_suffix(rpath, sizeof(rpath), 12);
-			renamed = true;
 		}
 
 		archive_entry_set_pathname(ae, rpath);
@@ -288,9 +288,6 @@ pkg_add_check_pkg_archive(struct pkgdb *db, struct pkg *pkg,
 	struct pkg_manifest_key *keys, const char *location)
 {
 	const char	*arch;
-	const char	*abi;
-	const char	*origin;
-	const char	*name;
 	int	ret, retcode;
 	struct pkg_dep	*dep = NULL;
 	char	bd[MAXPATHLEN], *basedir;
@@ -298,16 +295,16 @@ pkg_add_check_pkg_archive(struct pkgdb *db, struct pkg *pkg,
 	const char	*ext;
 	struct pkg	*pkg_inst = NULL;
 
-	pkg_get(pkg, PKG_ARCH, &arch, PKG_ABI, &abi, PKG_ORIGIN, &origin, PKG_NAME, &name);
-	if (abi != NULL)
-		arch = abi;
+	arch = pkg->abi != NULL ? pkg->abi : pkg->arch;
 
 	if (!is_valid_abi(arch, true)) {
 		if ((flags & PKG_ADD_FORCE) == 0) {
 			return (EPKG_FATAL);
 		}
 	}
-	ret = pkg_try_installed(db, origin, &pkg_inst, PKG_LOAD_BASIC);
+
+	/* XX check */
+	ret = pkg_try_installed(db, pkg->origin, &pkg_inst, PKG_LOAD_BASIC);
 	if (ret == EPKG_OK) {
 		if ((flags & PKG_ADD_FORCE) == 0) {
 			pkg_emit_already_installed(pkg_inst);
@@ -315,15 +312,15 @@ pkg_add_check_pkg_archive(struct pkgdb *db, struct pkg *pkg,
 			pkg_inst = NULL;
 			return (EPKG_INSTALLED);
 		}
-		else if (pkg_is_locked(pkg_inst)) {
+		else if (pkg_inst->locked) {
 			pkg_emit_locked(pkg_inst);
 			pkg_free(pkg_inst);
 			pkg_inst = NULL;
-			return (EPKG_INSTALLED);
+			return (EPKG_LOCKED);
 		}
 		else {
 			pkg_emit_notice("package %s is already installed, forced install",
-				name);
+				pkg->name);
 			pkg_free(pkg_inst);
 			pkg_inst = NULL;
 		}
@@ -353,15 +350,12 @@ pkg_add_check_pkg_archive(struct pkgdb *db, struct pkg *pkg,
 	pkg_emit_add_deps_begin(pkg);
 
 	while (pkg_deps(pkg, &dep) == EPKG_OK) {
-		if (pkg_is_installed(db, pkg_dep_origin(dep)) == EPKG_OK)
+		if (pkg_is_installed(db, dep->name) == EPKG_OK)
 			continue;
 
 		if (basedir != NULL) {
-			const char *dep_name = pkg_dep_name(dep);
-			const char *dep_ver = pkg_dep_version(dep);
-
 			snprintf(dpath, sizeof(dpath), "%s/%s-%s%s", basedir,
-				dep_name, dep_ver, ext);
+				dep->name, dep->version, ext);
 
 			if ((flags & PKG_ADD_UPGRADE) == 0 &&
 							access(dpath, F_OK) == 0) {
@@ -372,8 +366,7 @@ pkg_add_check_pkg_archive(struct pkgdb *db, struct pkg *pkg,
 			} else {
 				pkg_emit_error("Missing dependency matching "
 					"Origin: '%s' Version: '%s'",
-					pkg_dep_get(dep, PKG_DEP_ORIGIN),
-					pkg_dep_get(dep, PKG_DEP_VERSION));
+					dep->origin, dep->version);
 				if ((flags & PKG_ADD_FORCE_MISSING) == 0)
 					goto cleanup;
 			}
@@ -391,10 +384,9 @@ cleanup:
 }
 
 static int
-pkg_add_cleanup_old(struct pkg *old, struct pkg *new, int flags)
+pkg_add_cleanup_old(struct pkgdb *db, struct pkg *old, struct pkg *new, int flags)
 {
 	struct pkg_file *f;
-	struct pkg_dir *d, *cd;
 	int ret = EPKG_OK;
 	bool handle_rc;
 
@@ -424,13 +416,7 @@ pkg_add_cleanup_old(struct pkg *old, struct pkg *new, int flags)
 			}
 		}
 
-		d = NULL;
-		while (pkg_dirs(old, &d) == EPKG_OK) {
-			HASH_FIND_STR(new->dirs, d->path, cd);
-
-			if (cd == NULL)
-				pkg_delete_dir(old, d);
-		}
+		pkg_delete_dirs(db, old, new);
 	}
 
 	return (ret);
@@ -446,7 +432,6 @@ pkg_add_common(struct pkgdb *db, const char *path, unsigned flags,
 	struct pkg	*pkg = NULL;
 	bool		 extract = true;
 	bool		 handle_rc = false;
-	bool		 automatic;
 	int		 retcode = EPKG_OK;
 	int		 ret;
 	int nfiles;
@@ -470,15 +455,20 @@ pkg_add_common(struct pkgdb *db, const char *path, unsigned flags,
 	}
 	if ((flags & PKG_ADD_UPGRADE) == 0)
 		pkg_emit_install_begin(pkg);
+	else {
+		if (local != NULL)
+			pkg_emit_upgrade_begin(pkg, local);
+		else
+			pkg_emit_install_begin(pkg);
+	}
 
 	if (pkg_is_valid(pkg) != EPKG_OK) {
 		pkg_emit_error("the package is not valid");
 		return (EPKG_FATAL);
 	}
 
-	if (flags & PKG_ADD_AUTOMATIC) {
-		pkg_set(pkg, PKG_AUTOMATIC, (bool)true);
-	}
+	if (flags & PKG_ADD_AUTOMATIC)
+		pkg->automatic = true;
 
 	/*
 	 * Additional checks for non-remote package
@@ -486,28 +476,27 @@ pkg_add_common(struct pkgdb *db, const char *path, unsigned flags,
 	if (remote == NULL) {
 		ret = pkg_add_check_pkg_archive(db, pkg, path, flags, keys, location);
 		if (ret != EPKG_OK) {
-			retcode = ret;
+			/* Do not return error on installed package */
+			retcode = (ret == EPKG_INSTALLED ? EPKG_OK : ret);
 			goto cleanup;
 		}
 	}
 	else {
-		const char *manifestdigest;
-
 		if (remote->repo != NULL) {
 			/* Save reponame */
-			pkg_addannotation(pkg, "repository", remote->repo->name);
-			pkg_addannotation(pkg, "repo_type", remote->repo->ops->type);
+			pkg_kv_add(&pkg->annotations, "repository", remote->repo->name, "annotation");
+			pkg_kv_add(&pkg->annotations, "repo_type", remote->repo->ops->type, "annotation");
 		}
 
-		pkg_get(remote, PKG_DIGEST, &manifestdigest, PKG_AUTOMATIC, &automatic);
-		pkg_set(pkg, PKG_DIGEST, manifestdigest);
+		free(pkg->digest);
+		pkg->digest = strdup(remote->digest);
 		/* only preserve flags is -A has not been passed */
 		if ((flags & PKG_ADD_AUTOMATIC) == 0)
-			pkg_set(pkg, PKG_AUTOMATIC, automatic);
+			pkg->automatic = remote->automatic;
 	}
 
 	if (location != NULL)
-		pkg_addannotation(pkg, "relocated", location);
+		pkg_kv_add(&pkg->annotations, "relocated", location, "annotation");
 
 	/* register the package before installing it in case there are
 	 * problems that could be caught here. */
@@ -520,7 +509,7 @@ pkg_add_common(struct pkgdb *db, const char *path, unsigned flags,
 
 	if (local != NULL) {
 		pkg_debug(1, "Cleaning up old version");
-		if (pkg_add_cleanup_old(local, pkg, flags) != EPKG_OK) {
+		if (pkg_add_cleanup_old(db, local, pkg, flags) != EPKG_OK) {
 			retcode = EPKG_FATAL;
 			goto cleanup;
 		}
@@ -543,7 +532,7 @@ pkg_add_common(struct pkgdb *db, const char *path, unsigned flags,
 	    != EPKG_OK) {
 		/* If the add failed, clean up (silently) */
 		pkg_delete_files(pkg, 2);
-		pkg_delete_dirs(db, pkg);
+		pkg_delete_dirs(db, pkg, NULL);
 		goto cleanup_reg;
 	}
 
@@ -573,8 +562,16 @@ pkg_add_common(struct pkgdb *db, const char *path, unsigned flags,
 	if ((flags & PKG_ADD_UPGRADE) == 0)
 		pkgdb_register_finale(db, retcode);
 
-	if (retcode == EPKG_OK && (flags & PKG_ADD_UPGRADE) == 0)
-		pkg_emit_install_finished(pkg);
+	if (retcode == EPKG_OK) {
+		if ((flags & PKG_ADD_UPGRADE) == 0)
+			pkg_emit_install_finished(pkg);
+		else {
+			if (local != NULL)
+				pkg_emit_upgrade_finished(pkg, local);
+			else
+				pkg_emit_install_finished(pkg);
+		}
+	}
 
 	cleanup:
 	if (a != NULL) {

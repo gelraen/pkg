@@ -15,7 +15,7 @@
 .\"     @(#)pkg-repository.5
 .\" $FreeBSD$
 .\"
-.Dd September 30, 2013
+.Dd December 29, 2014
 .Dt PKG-REPOSITORY 5
 .Os
 .Sh NAME
@@ -120,11 +120,9 @@ this will usually contain only the
 link, used for bootstrapping
 .Nm pkg
 itself on a new system.
-.It Pa $REPOSITORY_ROOT/digests.txz
-Package checksum data and optionally package signatures.
 .It Pa $REPOSITORY_ROOT/packagesite.txz
 Contains one
-.Cm YAML
+.Cm JSON
 document, which is the concatenation of the
 .Pa +MANIFEST
 files from each of the packages in the repository.
@@ -134,7 +132,7 @@ or later.
 .It Pa $REPOSITORY_ROOT/repo.txz
 (Deprecated).
 Contains the package manifest data as above, but pre-loaded into
-an Sqlite database.
+an SQLite database.
 This is supplied for backwards compatibility with
 .Nm pkg-1.0 .
 .It Pa $REPOSITORY_ROOT/filesite.txz
@@ -256,7 +254,7 @@ pkg install example-1.0.0
 will actually result in
 .Pa example-1.0.1
 being installed.
-To override this behaviour, on first installation of the package,
+To override this behaviour, on first installation of the package
 select the repository with the appropriate version:
 .Bd -literal -offset indent
 pkg install -r repo-a example-1.0.0

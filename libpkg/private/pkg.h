@@ -30,6 +30,8 @@
 #ifndef _PKG_PRIVATE_H
 #define _PKG_PRIVATE_H
 
+#include "bsd_compat.h"
+
 #include <sys/param.h>
 #include <sys/cdefs.h>
 #include <sys/sbuf.h>
@@ -38,7 +40,6 @@
 #include <archive.h>
 #include <sqlite3.h>
 #include <openssl/sha.h>
-#include <openssl/md5.h>
 #include <stdbool.h>
 #include <uthash.h>
 #include <utlist.h>
@@ -116,16 +117,47 @@
 	HASH_ADD(hh, head, type, sizeof(uint16_t), add)
 
 extern int eventpipe;
+extern int64_t debug_level;
+extern bool developer_mode;
 
 struct pkg_repo_it;
 struct pkg_repo;
 
 struct pkg {
-	ucl_object_t	*fields;
 	bool		 direct;
+	bool		 locked;
+	bool		 automatic;
+	int64_t		 id;
 	struct sbuf	*scripts[PKG_NUM_SCRIPTS];
+	char			*name;
+	char			*origin;
+	char			*version;
+	char			*old_version;
+	char			*maintainer;
+	char			*www;
+	char			*arch;
+	char			*abi;
+	char			*uid;
+	char			*digest;
+	char			*old_digest;
+	char			*message;
+	char			*prefix;
+	char			*comment;
+	char			*desc;
+	char			*sum;
+	char			*repopath;
+	char			*reponame;
+	char			*repourl;
+	char			*reason;
+	lic_t			 licenselogic;
+	int64_t			 pkgsize;
+	int64_t			 flatsize;
+	int64_t			 old_flatsize;
+	int64_t			 timestamp;
 	struct pkg_dep		*deps;
 	struct pkg_dep		*rdeps;
+	struct pkg_strel	*categories;
+	struct pkg_strel	*licenses;
 	struct pkg_file		*files;
 	struct pkg_dir		*dirs;
 	struct pkg_option	*options;
@@ -136,6 +168,7 @@ struct pkg {
 	struct pkg_conflict *conflicts;
 	struct pkg_provide	*provides;
 	struct pkg_config_file	*config_files;
+	struct pkg_kv		*annotations;
 	unsigned			flags;
 	int		rootfd;
 	char		rootpath[MAXPATHLEN];
@@ -149,12 +182,17 @@ struct pkg {
 };
 
 struct pkg_dep {
-	struct sbuf	*origin;
-	struct sbuf	*name;
-	struct sbuf	*version;
+	char		*origin;
+	char		*name;
+	char		*version;
 	char		*uid;
 	bool		 locked;
 	UT_hash_handle	 hh;
+};
+
+struct pkg_strel {
+	char *value;
+	struct pkg_strel *next;
 };
 
 enum pkg_conflict_type {
@@ -165,13 +203,13 @@ enum pkg_conflict_type {
 };
 
 struct pkg_conflict {
-	struct sbuf		*uniqueid;
+	char *uid;
 	enum pkg_conflict_type type;
 	UT_hash_handle	hh;
 };
 
 struct pkg_provide {
-	struct sbuf		*provide;
+	char	*provide;
 	UT_hash_handle	hh;
 };
 
@@ -194,10 +232,10 @@ struct pkg_dir {
 };
 
 struct pkg_option {
-	struct sbuf	*key;
-	struct sbuf	*value;
-	struct sbuf	*default_value;
-	struct sbuf	*description;
+	char	*key;
+	char	*value;
+	char	*default_value;
+	char	*description;
 	UT_hash_handle	hh;
 };
 
@@ -214,7 +252,7 @@ struct pkg_group {
 };
 
 struct pkg_shlib {
-	struct sbuf	*name;
+	char *name;
 	UT_hash_handle	hh;
 };
 
@@ -233,6 +271,9 @@ struct pkg_repo_meta_key {
 typedef enum pkg_checksum_type_e {
 	PKG_HASH_TYPE_SHA256_BASE32 = 0,
 	PKG_HASH_TYPE_SHA256_HEX,
+	PKG_HASH_TYPE_BLAKE2_BASE32,
+	PKG_HASH_TYPE_SHA256_RAW,
+	PKG_HASH_TYPE_BLAKE2_RAW,
 	PKG_HASH_TYPE_UNKNOWN
 } pkg_checksum_type_t;
 
@@ -348,6 +389,8 @@ struct pkg_repo {
 	bool enable;
 	UT_hash_handle hh;
 
+	unsigned int priority;
+
 	pkg_repo_flags flags;
 
 	/* Opaque repository data */
@@ -450,6 +493,8 @@ int pkg_repo_fetch_package(struct pkg *pkg);
 int pkg_repo_mirror_package(struct pkg *pkg, const char *destdir);
 FILE* pkg_repo_fetch_remote_extract_tmp(struct pkg_repo *repo,
 		const char *filename, time_t *t, int *rc);
+unsigned char *pkg_repo_fetch_remote_extract_mmap(struct pkg_repo *repo,
+    const char *filename, time_t *t, int *rc, size_t *sz);
 int pkg_repo_fetch_meta(struct pkg_repo *repo, time_t *t);
 
 struct pkg_repo_meta *pkg_repo_meta_default(void);
@@ -461,6 +506,7 @@ bool pkg_repo_meta_is_special_file(const char *file, struct pkg_repo_meta *meta)
 typedef enum {
 	HASH_UNKNOWN,
 	HASH_SHA256,
+	HASH_BLAKE2
 } hash_t;
 
 struct fingerprint {
@@ -481,6 +527,12 @@ int pkg_open2(struct pkg **p, struct archive **a, struct archive_entry **ae,
 int pkg_validate(struct pkg *pkg);
 
 void pkg_list_free(struct pkg *, pkg_list);
+
+int pkg_strel_new(struct pkg_strel **, const char *val);
+void pkg_strel_free(struct pkg_strel *);
+
+int pkg_kv_new(struct pkg_kv **, const char *key, const char *val);
+void pkg_kv_free(struct pkg_kv *);
 
 int pkg_dep_new(struct pkg_dep **);
 void pkg_dep_free(struct pkg_dep *);
@@ -530,7 +582,7 @@ pkg_formats packing_format_from_string(const char *str);
 const char* packing_format_to_string(pkg_formats format);
 
 int pkg_delete_files(struct pkg *pkg, unsigned force);
-int pkg_delete_dirs(struct pkgdb *db, struct pkg *pkg);
+int pkg_delete_dirs(struct pkgdb *db, struct pkg *pkg, struct pkg *p);
 
 /* pkgdb commands */
 int sql_exec(sqlite3 *, const char *, ...);
@@ -560,9 +612,17 @@ pkg_object* pkg_emit_object(struct pkg *pkg, short flags);
 
 /* Hash is in format <version>:<typeid>:<hexhash> */
 #define PKG_CHECKSUM_SHA256_LEN (SHA256_DIGEST_LENGTH * 2 + sizeof("100") * 2 + 2)
+#define PKG_CHECKSUM_BLAKE2_LEN (BLAKE2B_OUTBYTES * 8 / 5 + sizeof("100") * 2 + 2)
 #define PKG_CHECKSUM_CUR_VERSION 2
 
 int pkg_checksum_generate(struct pkg *pkg, char *dest, size_t destlen,
+	pkg_checksum_type_t type);
+
+/*
+ * Calculates checksum for any data.
+ * Caller must free resulting hash after usage
+ */
+unsigned char * pkg_checksum_data(const unsigned char *in, size_t inlen,
 	pkg_checksum_type_t type);
 
 bool pkg_checksum_is_valid(const char *cksum, size_t clen);
@@ -582,7 +642,6 @@ void pkg_add_dir_to_del(struct pkg *pkg, const char *file, const char *dir);
 struct plist *plist_new(struct pkg *p, const char *stage);
 int plist_parse_line(struct pkg *pkg, struct plist *p, char *line);
 void plist_free(struct plist *);
-const char *pkg_getannotation(const struct pkg *, const char *);
 int pkg_appendscript(struct pkg *pkg, const char *cmd, pkg_script type);
 
 int pkg_addscript(struct pkg *pkg, const char *data, pkg_script type);
@@ -598,8 +657,9 @@ int pkg_adddir_attr(struct pkg *pkg, const char *path, const char *uname,
 		    const char *gname, mode_t perm, bool try,
 		    bool check_duplicates);
 
-int pkg_addcategory(struct pkg *pkg, const char *name);
-int pkg_addlicense(struct pkg *pkg, const char *name);
+int pkg_strel_add(struct pkg_strel **l, const char *name, const char *title);
+int pkg_kv_add(struct pkg_kv **kv, const char *key, const char *value, const char *title);
+const char *pkg_kv_get(struct pkg_kv *const*kv, const char *key);
 int pkg_adduser(struct pkg *pkg, const char *name);
 int pkg_addgroup(struct pkg *pkg, const char *group);
 int pkg_adduid(struct pkg *pkg, const char *name, const char *uidstr);
@@ -616,6 +676,5 @@ int pkg_addoption_description(struct pkg *pkg, const char *key, const char *desc
 
 int pkg_arch_to_legacy(const char *arch, char *dest, size_t sz);
 bool pkg_is_config_file(struct pkg *p, const char *path, const struct pkg_file **file, struct pkg_config_file **cfile);
-
 
 #endif

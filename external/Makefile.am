@@ -45,7 +45,11 @@ noinst_HEADERS= expat/amiga/expat_68k.h \
 		libelf/elfdefinitions.h \
 		libelf/gelf.h \
 		libelf/libelf.h \
+		libmachista/hashmap.h \
+		libmachista/libmachista.h \
 		libsbuf/sys/sbuf.h \
+		libucl/klib/kvec.h \
+		libucl/klib/khash.h \
 		libucl/include/ucl.h \
 		libucl/src/xxhash.h \
 		libucl/src/ucl_internal.h \
@@ -62,16 +66,36 @@ noinst_HEADERS= expat/amiga/expat_68k.h \
 		uthash/utlist.h \
 		include/tree.h \
 		include/siphash.h \
-		config.h
+		config.h \
+		libfetch/common.h \
+		libfetch/fetch.h \
+		libfetch/httperr.h \
+		libfetch/ftperr.h
 
-EXTRA_LTLIBRARIES=	libelf.la
+DYNLIBS=		libucl.la \
+			libsqlite.la \
+			libexpat.la \
+			libsbuf.la \
+			libpicosat.la \
+			libfetch.la
+noinst_LTLIBRARIES=	libucl_static.la \
+			libsqlite_static.la \
+			libexpat_static.la \
+			libsbuf_static.la \
+			libpicosat_static.la \
+			libfetch_static.la
+if LIBELF_BUNDLED
+DYNLIBS+=		libelf.la
+noinst_LTLIBRARIES+=	libelf_static.la
+endif
 
-noinst_LTLIBRARIES=	libucl.la libucl_static.la \
-			libsqlite.la libsqlite_static.la \
-			libexpat.la libexpat_static.la \
-			libsbuf.la libsbuf_static.la \
-			libpicosat.la libpicosat_static.la \
-			@LIBELF_BUNDLED@
+if HAVE_MACHO_ABI
+noinst_LTLIBRARIES+=	libmachista_static.la
+endif
+
+if DYNAMIC
+noinst_LTLIBRARIES+=	$(DYNLIBS)
+endif
 
 libelf_la_SOURCES=	libelf/elf.c \
 			libelf/elf_begin.c \
@@ -132,6 +156,14 @@ libelf_la_SOURCES=	libelf/elf.c \
 			libelf/libelf_msize.c \
 			libelf/libelf_convert.c
 libelf_la_CFLAGS=	-I$(top_srcdir)/external/libelf
+libelf_static_la_SOURCES=	${libelf_la_SOURCES}
+libelf_static_la_CFLAGS=	$(libelf_la_CFLAGS) -static
+libelf_static_la_LDFLAGS=	-all-static
+
+libmachista_static_la_SOURCES=	libmachista/libmachista.c \
+				libmachista/hashmap.c
+libmachista_static_la_CFLAGS=	-I$(tip_srcdir)/external/libmachista -static
+libmachista_static_la_LDFLAGS=	-all-static
 
 libsbuf_la_SOURCES=	libsbuf/subr_sbuf.c
 sbuf_common_CFLAGS=	-I$(top_srcdir)/external/libsbuf
@@ -140,9 +172,10 @@ libsbuf_static_la_SOURCES=	${libsbuf_la_SOURCES}
 libsbuf_static_la_CFLAGS=	$(sbuf_common_CFLAGS) -static
 libsbuf_static_la_LDFLAGS=	-all-static
 
-ucl_common_cflags=	-I$(top_srcdir)/external//libucl/uthash \
+ucl_common_cflags=	-I$(top_srcdir)/external/libucl/uthash \
+			-I$(top_srcdir)/external/libucl/klib \
 			-I$(top_srcdir)/external/libucl/include  \
-			-I$(top_srcdir)/external//libucl/src \
+			-I$(top_srcdir)/external/libucl/src \
 			-Wno-unused-parameter -Wno-pointer-sign
 libucl_la_SOURCES=	libucl/src/ucl_emitter.c \
 			libucl/src/ucl_emitter_utils.c \
@@ -201,7 +234,7 @@ sqlite_common_cflags=	-DHAVE_SQLITE_CONFIG_H \
 			-DSQLITE_OMIT_SHARED_CACHE \
 			-DSQLITE_ENABLE_UNLOCK_NOTIFY=1 \
 			-DUSE_PREAD \
-			-DSQLITE_THREADSAFE=1 \
+			-DSQLITE_THREADSAFE=0 \
 			-DSQLITE_TEMP_STORE=3 \
 			-DSQLITE_ENABLE_FTS4 \
 			-DSQLITE_SHELL_DBNAME_PROC=pkgshell_open \
@@ -213,6 +246,17 @@ libsqlite_static_la_SOURCES=	$(libsqlite_la_SOURCES)
 libsqlite_static_la_CFLAGS=	$(sqlite_common_cflags) -static
 libsqlite_static_la_LDFLAGS=	-all-static
 
+libfetch_common_cflags=	-I$(top_srcdir)/compat -DWITH_SSL -Wno-pointer-sign
+libfetch_la_CFLAGS=	$(libfetch_common_cflags) -shared
+libfetch_la_SOURCES=	libfetch/common.c \
+			libfetch/fetch.c \
+			libfetch/file.c \
+			libfetch/ftp.c \
+			libfetch/http.c
+libfetch_static_la_CFLAGS=	$(libfetch_common_cflags) -static
+libfetch_static_la_SOURCES=	${libfetch_la_SOURCES}
+
+if HAVE_ELF_ABI
 CLEANFILES=	libelf/libelf_fsize.c \
 			libelf/libelf_msize.c \
 			libelf/libelf_convert.c \
@@ -235,3 +279,7 @@ libelf/libelf_msize.c:
 	@m4 -D SRCDIR=$(srcdir)/libelf $(srcdir)/libelf/elf_types.m4 $(srcdir)/libelf/libelf_msize.m4 > $@
 libelf/native-elf-format.h:
 	$(srcdir)/libelf/native-elf-format > libelf/native-elf-format.h
+
+endif
+
+SUBDIRS=	blake2

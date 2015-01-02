@@ -2,11 +2,11 @@ AUTOMAKE_OPTIONS=	subdir-objects
 
 GENERIC_LDADD=	$(top_builddir)/libpkg/libpkg_static.la \
 		$(top_builddir)/external/libsbuf_static.la \
-		@LIBJAIL_LIB@ \
-		@LIBEXECINFO_LIB@ \
-		@LIBELF_LIB@ \
+		$(top_builddir)/compat/libbsd_compat.la \
+		$(top_builddir)/external/libfetch_static.la \
 		@LDNS_LIBS@ \
-		-lfetch \
+		@LIBJAIL_LIB@ \
+		@OS_LIBS@ \
 		-larchive \
 		-lutil \
 		-lm \
@@ -14,9 +14,26 @@ GENERIC_LDADD=	$(top_builddir)/libpkg/libpkg_static.la \
 		-lcrypto \
 		-L/usr/local/lib \
 		-latf-c
-PUBLIC_INCS=	-I$(top_srcdir)/libpkg -DTESTING \
+
+if HAVE_ELF_ABI
+if LIBELF_BUNDLED
+GENERIC_LDADD+=	$(top_builddir)/external/libelf_static.la
+else
+GENERIC_LDADD+=	-lelf
+endif
+endif
+
+if HAVE_MACHO_ABI
+GENERIC_LDADD+=	$(top_builddir)/external/libmachista_static.la \
+		-lresolv
+endif
+
+PUBLIC_INCS=	-DTESTING \
+		-I$(top_srcdir)/compat \
+		-I$(top_srcdir)/libpkg \
 		-I/usr/local/include
 PRIVATE_INCS=	$(PUBLIC_INCS) \
+		-I$(top_srcdir)/external/libsbuf \
 		-I$(top_srcdir)/external/sqlite \
 		-I$(top_srcdir)/external/uthash \
 		-I$(top_srcdir)/external/libucl/include
@@ -29,7 +46,8 @@ pkg_printf_CFLAGS=	$(PRIVATE_INCS)
 pkg_printf_LDADD=	$(GENERIC_LDADD)
 
 pkg_validation_SOURCES=	lib/pkg_validation.c
-pkg_validation_CFLAGS=	$(PUBLIC_INCS)
+pkg_validation_CFLAGS=	$(PUBLIC_INCS) \
+			-I$(top_srcdir)/external/libsbuf
 pkg_validation_LDADD=	$(GENERIC_LDADD)
 
 plist_SOURCES=		lib/plist.c
@@ -52,7 +70,8 @@ EXTRA_DIST=	frontend/png.uclin \
 		frontend/search.shin \
 		frontend/version.shin \
 		frontend/test_environment.shin \
-		frontend/register.shin
+		frontend/register.shin \
+		frontend/packagesplit.shin
 
 TESTS =
 tests_programs=	pkg_printf \
@@ -67,6 +86,7 @@ check_SCRIPTS=	frontend/pkg.sh \
 		frontend/search.sh \
 		frontend/version.sh \
 		frontend/register.sh \
+		frontend/packagesplit.sh \
 		frontend/test_environment.sh \
 		frontend/png.ucl \
 		frontend/sqlite3.ucl

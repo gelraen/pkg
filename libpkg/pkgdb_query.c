@@ -32,11 +32,17 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef HAVE_CONFIG_H
+#include "pkg_config.h"
+#endif
+
 #include <assert.h>
 #include <errno.h>
 #include <regex.h>
 #include <grp.h>
+#ifdef HAVE_LIBUTIL_H
 #include <libutil.h>
+#endif
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdbool.h>
@@ -79,8 +85,7 @@ pkgdb_get_pattern_query(const char *pattern, match_t match)
 				else
 					comp = " WHERE origin = ?1";
 			} else {
-				comp = " WHERE name = SPLIT_UID('name', ?1) AND "
-						"origin = SPLIT_UID('origin', ?1)";
+				comp = " WHERE name = ?1";
 			}
 		} else {
 			if (checkuid == NULL) {
@@ -91,8 +96,7 @@ pkgdb_get_pattern_query(const char *pattern, match_t match)
 				else
 					comp = " WHERE origin = ?1 COLLATE NOCASE";
 			} else {
-				comp = " WHERE name = SPLIT_UID('name', ?1) COLLATE NOCASE AND "
-						"origin = SPLIT_UID('origin', ?1) COLLATE NOCASE";
+				comp = " WHERE name = ?1 COLLATE NOCASE";
 			}
 		}
 		break;
@@ -104,8 +108,7 @@ pkgdb_get_pattern_query(const char *pattern, match_t match)
 			else
 				comp = " WHERE origin GLOB ?1";
 		} else {
-			comp = " WHERE name = SPLIT_UID('name', ?1) AND "
-					"origin = SPLIT_UID('origin', ?1)";
+			comp = " WHERE name = ?1";
 		}
 		break;
 	case MATCH_REGEX:
@@ -116,8 +119,7 @@ pkgdb_get_pattern_query(const char *pattern, match_t match)
 			else
 				comp = " WHERE origin REGEXP ?1";
 		} else {
-			comp = " WHERE name = SPLIT_UID('name', ?1) AND "
-					"origin = SPLIT_UID('origin', ?1)";
+			comp = " WHERE name = ?1";
 		}
 		break;
 	case MATCH_CONDITION:
@@ -149,7 +151,7 @@ pkgdb_query(struct pkgdb *db, const char *pattern, match_t match)
 	comp = pkgdb_get_pattern_query(pattern, match);
 
 	sqlite3_snprintf(sizeof(sql), sql,
-			"SELECT id, origin, name, name || '~' || origin as uniqueid, "
+			"SELECT id, origin, name, name as uniqueid, "
 				"version, comment, desc, "
 				"message, arch, maintainer, www, "
 				"prefix, flatsize, licenselogic, automatic, "
@@ -181,7 +183,7 @@ pkgdb_query_which(struct pkgdb *db, const char *path, bool glob)
 		return (NULL);
 
 	sqlite3_snprintf(sizeof(sql), sql,
-			"SELECT p.id, p.origin, p.name, p.name || '~' || p.origin as uniqueid, "
+			"SELECT p.id, p.origin, p.name, p.name as uniqueid, "
 			"p.version, p.comment, p.desc, "
 			"p.message, p.arch, p.maintainer, p.www, "
 			"p.prefix, p.flatsize, p.time "
@@ -205,7 +207,7 @@ pkgdb_query_shlib_require(struct pkgdb *db, const char *shlib)
 {
 	sqlite3_stmt	*stmt;
 	const char	 sql[] = ""
-		"SELECT p.id, p.origin, p.name, p.name || '~' || p.origin as uniqueid, "
+		"SELECT p.id, p.origin, p.name, p.name as uniqueid, "
 			"p.version, p.comment, p.desc, "
 			"p.message, p.arch, p.maintainer, p.www, "
 			"p.prefix, p.flatsize, p.time "
@@ -232,7 +234,7 @@ pkgdb_query_shlib_provide(struct pkgdb *db, const char *shlib)
 {
 	sqlite3_stmt	*stmt;
 	const char	 sql[] = ""
-		"SELECT p.id, p.origin, p.name, p.name || '~' || p.origin as uniqueid, "
+		"SELECT p.id, p.origin, p.name, p.name as uniqueid, "
 			"p.version, p.comment, p.desc, "
 			"p.message, p.arch, p.maintainer, p.www, "
 			"p.prefix, p.flatsize, p.time "

@@ -28,13 +28,19 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef HAVE_CONFIG_H
+#include "pkg_config.h"
+#endif
+
 #include <sys/param.h>
 #include <sys/stat.h>
 
 #include <err.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#ifdef HAVE_LIBUTIL_H
 #include <libutil.h>
+#endif
 #include <string.h>
 #include <unistd.h>
 #include <stdarg.h>
@@ -43,6 +49,8 @@
 #include <stdio.h>
 #include <errno.h>
 #include <pkg.h>
+
+#include <bsd_compat.h>
 
 #include "utlist.h"
 #include "pkgcli.h"
@@ -56,7 +64,7 @@ query_tty_yesno(bool r, const char *msg, ...)
 	FILE	*tty;
 	int	 tty_flags = O_RDWR;
 
-#ifndef __DragonFly__
+#ifdef O_TTY_INIT
 	tty_flags |= O_TTY_INIT;
 #endif
 	tty_fd = open(_PATH_TTY, tty_flags);
@@ -265,7 +273,6 @@ print_info(struct pkg * const pkg, uint64_t options)
 	bool show_locks = false;
 	char size[7];
 	const char *repourl;
-	const pkg_object	*o;
 	unsigned opt;
 	int64_t flatsize, oldflatsize, pkgsize;
 	int cout = 0;		/* Number of characters output */
@@ -396,22 +403,14 @@ print_info(struct pkg * const pkg, uint64_t options)
 				printf("\n");
 			break;
 		case INFO_CATEGORIES:
-			pkg_get(pkg, PKG_CATEGORIES, &o);
-			if (pkg_object_count(o) > 0) {
-				if (print_tag)
-					printf("%-15s: ", "Categories");
-				pkg_printf("%C%{%Cn%| %}\n", pkg);
-			} else if (!print_tag)
-				printf("\n");
+			if (print_tag)
+				printf("%-15s: ", "Categories");
+			pkg_printf("%C%{%Cn%| %}\n", pkg);
 			break;
 		case INFO_LICENSES:
-			pkg_get(pkg, PKG_LICENSES, &o);
-			if (pkg_object_count(o) > 0) {
-				if (print_tag)
-					printf("%-15s: ", "Licenses");
-				pkg_printf("%L%{%Ln%| %l %}\n", pkg);
-			} else if (!print_tag)
-				printf("\n");
+			if (print_tag)
+				printf("%-15s: ", "Licenses");
+			pkg_printf("%L%{%Ln%| %l %}\n", pkg);
 			break;
 		case INFO_MAINTAINER:
 			if (print_tag)
@@ -459,15 +458,12 @@ print_info(struct pkg * const pkg, uint64_t options)
 			}
 			break;
 		case INFO_ANNOTATIONS:
-			pkg_get(pkg, PKG_ANNOTATIONS, &o);
-			if (pkg_object_count(o) > 0) {
-				if (print_tag)
-					printf("%-15s:\n", "Annotations");
-				if (quiet)
-					pkg_printf("%A%{%-15An: %Av\n%|%}", pkg);
-				else
-					pkg_printf("%A%{\t%-15An: %Av\n%|%}", pkg);					
-			}
+			if (print_tag)
+				printf("%-15s:\n", "Annotations");
+			if (quiet)
+				pkg_printf("%A%{%-15An: %Av\n%|%}", pkg);
+			else
+				pkg_printf("%A%{\t%-15An: %Av\n%|%}", pkg);
 			break;
 		case INFO_FLATSIZE:
 			if (print_tag)
@@ -879,45 +875,6 @@ print_jobs_summary(struct pkg_jobs *jobs, const char *msg, ...)
 	}
 
 	return (displayed);
-}
-
-int
-hash_file(const char *path, char out[SHA256_DIGEST_LENGTH * 2 + 1])
-{
-	FILE *fp;
-	char buffer[BUFSIZ];
-	unsigned char hash[SHA256_DIGEST_LENGTH];
-	size_t r = 0;
-	SHA256_CTX sha256;
-	int i;
-
-	if ((fp = fopen(path, "rb")) == NULL) {
-		warn("fopen(%s)", path);
-		return (EPKG_FATAL);
-	}
-
-	SHA256_Init(&sha256);
-
-	while ((r = fread(buffer, 1, BUFSIZ, fp)) > 0)
-		SHA256_Update(&sha256, buffer, r);
-
-	if (ferror(fp) != 0) {
-		fclose(fp);
-		out[0] = '\0';
-		warn("fread(%s)", path);
-		return (EPKG_FATAL);
-	}
-
-	fclose(fp);
-
-	SHA256_Final(hash, &sha256);
-
-	for (i = 0; i < SHA256_DIGEST_LENGTH; i++)
-		sprintf(out + (i * 2), "%02x", hash[i]);
-
-	out[SHA256_DIGEST_LENGTH * 2] = '\0';
-
-	return (EPKG_OK);
 }
 
 void

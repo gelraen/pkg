@@ -1,0 +1,23 @@
+language: c
+
+os:
+  - osx
+
+compiler:
+  - clang
+  - gcc
+
+before_script:
+  - brew update
+  - brew install libarchive --with-xz
+  - brew install openssl
+  - brew install kyua
+  - autoreconf -i
+
+script:
+  - ./configure
+  - make V=1
+  - make check
+
+after_failure:
+  - kyua report --verbose

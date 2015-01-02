@@ -27,6 +27,7 @@
 #include "pkg.h"
 #include "private/pkg.h"
 #include "private/event.h"
+#include "blake2.h"
 
 struct pkg_checksum_entry {
 	const char *field;
@@ -39,10 +40,18 @@ struct pkg_checksum_entry {
 
 typedef void (*pkg_checksum_hash_func)(struct pkg_checksum_entry *entries,
 				unsigned char **out, size_t *outlen);
+typedef void (*pkg_checksum_hash_bulk_func)(const unsigned char *in, size_t inlen,
+				unsigned char **out, size_t *outlen);
 typedef void (*pkg_checksum_encode_func)(unsigned char *in, size_t inlen,
 				char *out, size_t outlen);
 
 static void pkg_checksum_hash_sha256(struct pkg_checksum_entry *entries,
+				unsigned char **out, size_t *outlen);
+static void pkg_checksum_hash_sha256_bulk(const unsigned char *in, size_t inlen,
+				unsigned char **out, size_t *outlen);
+static void pkg_checksum_hash_blake2(struct pkg_checksum_entry *entries,
+				unsigned char **out, size_t *outlen);
+static void pkg_checksum_hash_blake2_bulk(const unsigned char *in, size_t inlen,
 				unsigned char **out, size_t *outlen);
 static void pkg_checksum_encode_base32(unsigned char *in, size_t inlen,
 				char *out, size_t outlen);
@@ -53,19 +62,43 @@ static const struct _pkg_cksum_type {
 	const char *name;
 	size_t hlen;
 	pkg_checksum_hash_func hfunc;
+	pkg_checksum_hash_bulk_func hbulkfunc;
 	pkg_checksum_encode_func encfunc;
 } checksum_types[] = {
 	[PKG_HASH_TYPE_SHA256_BASE32] = {
 		"sha256_base32",
 		PKG_CHECKSUM_SHA256_LEN,
 		pkg_checksum_hash_sha256,
+		pkg_checksum_hash_sha256_bulk,
 		pkg_checksum_encode_base32
 	},
 	[PKG_HASH_TYPE_SHA256_HEX] = {
 		"sha256_hex",
 		PKG_CHECKSUM_SHA256_LEN,
 		pkg_checksum_hash_sha256,
+		pkg_checksum_hash_sha256_bulk,
 		pkg_checksum_encode_hex
+	},
+	[PKG_HASH_TYPE_BLAKE2_BASE32] = {
+		"blake2_base32",
+		PKG_CHECKSUM_BLAKE2_LEN,
+		pkg_checksum_hash_blake2,
+		pkg_checksum_hash_blake2_bulk,
+		pkg_checksum_encode_hex
+	},
+	[PKG_HASH_TYPE_SHA256_RAW] = {
+		"sha256_raw",
+		SHA256_DIGEST_LENGTH,
+		pkg_checksum_hash_sha256,
+		pkg_checksum_hash_sha256_bulk,
+		NULL
+	},
+	[PKG_HASH_TYPE_BLAKE2_RAW] = {
+		"blake2_raw",
+		BLAKE2B_OUTBYTES,
+		pkg_checksum_hash_blake2,
+		pkg_checksum_hash_blake2_bulk,
+		NULL
 	},
 	[PKG_HASH_TYPE_UNKNOWN] = {
 		NULL,
@@ -127,47 +160,37 @@ int
 pkg_checksum_generate(struct pkg *pkg, char *dest, size_t destlen,
 	pkg_checksum_type_t type)
 {
-	const char *key;
 	unsigned char *bdigest;
+	char *olduid;
 	size_t blen;
 	struct pkg_checksum_entry *entries = NULL;
-	const ucl_object_t *o;
 	struct pkg_option *option = NULL;
 	struct pkg_shlib *shlib = NULL;
 	struct pkg_user *user = NULL;
 	struct pkg_group *group = NULL;
 	struct pkg_dep *dep = NULL;
 	int i;
-	int recopies[] = {
-		PKG_NAME,
-		PKG_ORIGIN,
-		PKG_VERSION,
-		PKG_ARCH,
-		-1
-	};
 
 	if (pkg == NULL || type >= PKG_HASH_TYPE_UNKNOWN ||
 					destlen < checksum_types[type].hlen)
 		return (EPKG_FATAL);
 
-	for (i = 0; recopies[i] != -1; i++) {
-		key = pkg_keys[recopies[i]].name;
-		if ((o = ucl_object_find_key(pkg->fields, key)))
-			pkg_checksum_add_entry(key, ucl_object_tostring(o), &entries);
-	}
+	pkg_checksum_add_entry("name", pkg->name, &entries);
+	pkg_checksum_add_entry("origin", pkg->origin, &entries);
+	pkg_checksum_add_entry("version", pkg->version, &entries);
+	pkg_checksum_add_entry("arch", pkg->arch, &entries);
 
 	while (pkg_options(pkg, &option) == EPKG_OK) {
-		pkg_checksum_add_entry(pkg_option_opt(option), pkg_option_value(option),
-			&entries);
+		pkg_checksum_add_entry(option->key, option->value, &entries);
 	}
 
 	while (pkg_shlibs_required(pkg, &shlib) == EPKG_OK) {
-		pkg_checksum_add_entry("required_shlib", pkg_shlib_name(shlib), &entries);
+		pkg_checksum_add_entry("required_shlib", shlib->name, &entries);
 	}
 
 	shlib = NULL;
 	while (pkg_shlibs_provided(pkg, &shlib) == EPKG_OK) {
-		pkg_checksum_add_entry("provided_shlib", pkg_shlib_name(shlib), &entries);
+		pkg_checksum_add_entry("provided_shlib", shlib->name, &entries);
 	}
 
 	while (pkg_users(pkg, &user) == EPKG_OK) {
@@ -179,7 +202,9 @@ pkg_checksum_generate(struct pkg *pkg, char *dest, size_t destlen,
 	}
 
 	while (pkg_deps(pkg, &dep) == EPKG_OK) {
-		pkg_checksum_add_entry("depend", dep->uid, &entries);
+		asprintf(&olduid, "%s~%s", dep->name, dep->origin);
+		pkg_checksum_add_entry("depend", olduid, &entries);
+		free(olduid);
 	}
 
 	/* Sort before hashing */
@@ -191,11 +216,19 @@ pkg_checksum_generate(struct pkg *pkg, char *dest, size_t destlen,
 		return (EPKG_FATAL);
 	}
 
-	i = snprintf(dest, destlen, "%d%c%d%c", PKG_CHECKSUM_CUR_VERSION,
-		PKG_CKSUM_SEPARATOR, type, PKG_CKSUM_SEPARATOR);
-	assert(i < destlen);
-	checksum_types[type].encfunc(bdigest, blen, dest + i, destlen - i);
+	if (checksum_types[type].encfunc) {
+		i = snprintf(dest, destlen, "%d%c%d%c", PKG_CHECKSUM_CUR_VERSION,
+				PKG_CKSUM_SEPARATOR, type, PKG_CKSUM_SEPARATOR);
+		assert(i < destlen);
+		checksum_types[type].encfunc(bdigest, blen, dest + i, destlen - i);
+	}
+	else {
+		/* For raw formats we just output digest */
+		assert(destlen >= blen);
+		memcpy(dest, bdigest, blen);
+	}
 
+	free(bdigest);
 	LL_FREE(entries, free);
 
 	return (EPKG_OK);
@@ -249,7 +282,6 @@ pkg_checksum_get_type(const char *cksum, size_t clen)
 	return (PKG_HASH_TYPE_UNKNOWN);
 }
 
-
 static void
 pkg_checksum_hash_sha256(struct pkg_checksum_entry *entries,
 		unsigned char **out, size_t *outlen)
@@ -272,6 +304,52 @@ pkg_checksum_hash_sha256(struct pkg_checksum_entry *entries,
 		pkg_emit_errno("malloc", "pkg_checksum_hash_sha256");
 		*outlen = 0;
 	}
+}
+
+static void
+pkg_checksum_hash_sha256_bulk(const unsigned char *in, size_t inlen,
+				unsigned char **out, size_t *outlen)
+{
+	SHA256_CTX sign_ctx;
+
+	*out = malloc(SHA256_DIGEST_LENGTH);
+	SHA256_Init(&sign_ctx);
+	SHA256_Update(&sign_ctx, in, inlen);
+	SHA256_Final(*out, &sign_ctx);
+	*outlen = SHA256_DIGEST_LENGTH;
+}
+
+static void
+pkg_checksum_hash_blake2(struct pkg_checksum_entry *entries,
+		unsigned char **out, size_t *outlen)
+{
+	blake2b_state st;
+
+	blake2b_init (&st, BLAKE2B_OUTBYTES);
+
+	while(entries) {
+		blake2b_update (&st, entries->field, strlen(entries->field));
+		blake2b_update (&st, entries->value, strlen(entries->value));
+		entries = entries->next;
+	}
+	*out = malloc(BLAKE2B_OUTBYTES);
+	if (*out != NULL) {
+		blake2b_final (&st, *out, BLAKE2B_OUTBYTES);
+		*outlen = BLAKE2B_OUTBYTES;
+	}
+	else {
+		pkg_emit_errno("malloc", "pkg_checksum_hash_blake2");
+		*outlen = 0;
+	}
+}
+
+static void
+pkg_checksum_hash_blake2_bulk(const unsigned char *in, size_t inlen,
+				unsigned char **out, size_t *outlen)
+{
+	*out = malloc(BLAKE2B_OUTBYTES);
+	blake2b(*out, in, NULL, BLAKE2B_OUTBYTES, inlen, 0);
+	*outlen = BLAKE2B_OUTBYTES;
 }
 
 /*
@@ -385,13 +463,11 @@ pkg_checksum_calculate(struct pkg *pkg, struct pkgdb *db)
 {
 	char *new_digest;
 	struct pkg_repo *repo;
-	const char *reponame;
 	int rc = EPKG_OK;
 	pkg_checksum_type_t type = 0;
 
-	pkg_get(pkg, PKG_REPONAME, &reponame);
-	if (reponame != NULL) {
-		repo = pkg_repo_find(reponame);
+	if (pkg->reponame != NULL) {
+		repo = pkg_repo_find(pkg->reponame);
 
 		if (repo != NULL)
 			type = repo->meta->digest_format;
@@ -409,12 +485,45 @@ pkg_checksum_calculate(struct pkg *pkg, struct pkgdb *db)
 		return (EPKG_FATAL);
 	}
 
-	pkg_set(pkg, PKG_DIGEST, new_digest);
+	free(pkg->digest);
+	pkg->digest = new_digest;
 
 	if (db != NULL)
 		pkgdb_set_pkg_digest(db, pkg);
 
-	free(new_digest);
-
 	return (rc);
+}
+
+
+unsigned char *
+pkg_checksum_data(const unsigned char *in, size_t inlen,
+	pkg_checksum_type_t type)
+{
+	const struct _pkg_cksum_type *cksum;
+	unsigned char *out, *res = NULL;
+	size_t outlen;
+
+	if (type >= PKG_HASH_TYPE_UNKNOWN || in == NULL)
+		return (NULL);
+
+	/* Zero terminated string */
+	if (inlen == 0) {
+		inlen = strlen(in);
+	}
+
+	cksum = &checksum_types[type];
+
+	cksum->hbulkfunc(in, inlen, &out, &outlen);
+	if (out != NULL) {
+		if (cksum->encfunc != NULL) {
+			res = malloc(cksum->hlen);
+			cksum->encfunc(out, outlen, res, cksum->hlen);
+			free(out);
+		}
+		else {
+			res = out;
+		}
+	}
+
+	return (res);
 }

@@ -1,6 +1,6 @@
 m4_define([maj_ver], [1])
 m4_define([med_ver], [4])
-m4_define([min_ver], [0])
+m4_define([min_ver], [99])
 m4_define([api_ver], [m4_eval(maj_ver * 1000000 + med_ver * 1000 + min_ver)])
 m4_define([dev_ver], m4_expand([m4_normalize(m4_sinclude([dev_version.m4]))]))
 m4_ifset([dev_ver],
@@ -25,6 +25,7 @@ LIBPKG_AGE=0
 LIBPKG_SO_VERSION="$LIBPKG_CURRENT:$LIBPKG_REVISION:$LIBPKG_AGE"
 AC_SUBST(LIBPKG_SO_VERSION)
 
+AC_GNU_SOURCE
 AC_PROG_CC_C99
 LT_INIT()
 AC_CONFIG_MACRO_DIR([m4])
@@ -67,6 +68,32 @@ AC_LINK_IFELSE([
  	AC_MSG_RESULT([no])
 ])
 
+gl_LD_VERSION_SCRIPT
+
+AC_CANONICAL_HOST
+case $host_os in
+  linux*)
+        OS_CFLAGS="-D_XOPEN_SOURCE -D_GNU_SOURCE -pthread"
+        OS_LDFLAGS="-pthread"
+        OS_LIBS="-ldl -lrt"
+        OS_STATIC="false"
+        ;;
+    *)
+        OS_CFLAGS="-D_BSD_SOURCE"
+        OS_LDFLAGS=
+        OS_LIBS=
+        OS_STATIC="true"
+        ;;
+esac
+
+AC_SUBST(OS_CFLAGS)
+AC_SUBST(OS_LDFLAGS)
+AC_SUBST(OS_LIBS)
+AC_SUBST(OS_STATIC)
+AM_CONDITIONAL([BUILD_STATIC], [test x$OS_STATIC = xtrue])
+
+CFLAGS="$CFLAGS $OS_CFLAGS"
+
 AC_CHECK_HEADERS_ONCE([machine/endian.h])
 AC_CHECK_HEADERS_ONCE([endian.h])
 AC_CHECK_HEADERS_ONCE([sys/endian.h])
@@ -104,6 +131,22 @@ AC_CHECK_HEADERS_ONCE([stdio.h])
 AC_CHECK_HEADERS_ONCE([float.h])
 AC_CHECK_HEADERS_ONCE([math.h])
 AC_CHECK_HEADERS_ONCE([osreldate.h])
+AC_CHECK_HEADERS_ONCE([sys/socket.h])
+AC_CHECK_HEADERS_ONCE([netinet/in.h])
+AC_CHECK_HEADERS_ONCE([netinet/in6.h])
+AC_CHECK_HEADERS_ONCE([sys/statfs.h])
+AC_CHECK_HEADERS_ONCE([dirent.h], [sys/ndir.h], [sys/dir.h], [ndir.h])
+AC_CHECK_HEADERS_ONCE([sys/capability.h])
+AC_CHECK_HEADERS_ONCE([sys/capsicum.h])
+AC_CHECK_HEADERS_ONCE([bsd/stdlib.h])
+AC_CHECK_HEADERS_ONCE([bsd/string.h])
+AC_CHECK_HEADERS_ONCE([bsd/stdio.h])
+AC_CHECK_HEADERS_ONCE([bsd/readpassphrase.h])
+AC_CHECK_HEADERS_ONCE([bsd/libutil.h])
+AC_CHECK_HEADERS_ONCE([bsd/err.h])
+AC_CHECK_HEADERS_ONCE([bsd/unistd.h])
+AC_CHECK_HEADERS_ONCE([bsd/sys/cdefs.h])
+AC_CHECK_HEADERS_ONCE([sys/procctl.h])
 
 AC_CHECK_HEADER([regex.h], [
 	AC_DEFINE(HAVE_REGEX_H, 1, [Define to 1 if you have the <regex.h> header file.])
@@ -116,6 +159,48 @@ AC_CHECK_FUNCS_ONCE([usleep])
 AC_CHECK_FUNCS_ONCE([localtime_r])
 AC_CHECK_FUNCS_ONCE([gmtime_r])
 AC_CHECK_FUNCS_ONCE([strerror_r])
+AC_CHECK_FUNCS_ONCE([strtonum])
+AC_CHECK_FUNCS_ONCE([strnstr])
+AC_CHECK_FUNCS_ONCE([funopen])
+AC_CHECK_FUNCS_ONCE([fopencookie])
+AC_CHECK_FUNCS_ONCE([sysctlbyname])
+AC_CHECK_DECLS(
+	[[fstatat], [openat], [unlinkat], [readlinkat], [faccessat]],
+	[], [], [
+		#include <sys/types.h>
+		#include <fcntl.h>
+		#include <sys/stat.h>
+		#include <unistd.h>
+	])
+AC_CHECK_DECLS(
+	[[be16dec], [be32dec], [be64dec], [le16dec], [le32dec], [le64dec],
+	 [be16enc], [be32enc], [be64enc], [le16enc], [le32enc], [le64enc]],
+	[], [], [#include <sys/endian.h>]
+)
+AC_CHECK_FUNCS_ONCE([flopen])
+AC_CHECK_FUNCS_ONCE([eaccess])
+AC_CHECK_FUNCS_ONCE([closefrom])
+AC_CHECK_FUNCS_ONCE([dirfd])
+AC_CHECK_FUNCS_ONCE([sysconf])
+
+AC_CHECK_MEMBERS([struct in6_addr.s6_addr32, 
+	struct in6_addr.s6_addr16, 
+	struct sockaddr_in.sin_len, 
+	struct sockaddr_in6.sin6_len, 
+	struct sockaddr_storage.ss_len,
+	struct sockaddr_storage.ss_family,
+	struct sockaddr_storage.__ss_family], [], [],
+[#include <sys/types.h>
+#ifdef HAVE_NETINET_IN_H
+#include <netinet/in.h>
+#endif
+#ifdef HAVE_NETINET_IN6_H
+#include <netinet/in6.h>
+#endif
+#ifdef HAVE_SYS_SOCKET_H
+#include <sys/socket.h>
+#endif
+])
 
 PKG_PROG_PKG_CONFIG
 
@@ -175,19 +260,18 @@ AC_SEARCH_LIBS([jail_getid], [jail], [
 	AC_DEFINE(HAVE_LIBJAIL, 1, [Define to 1 if you have the 'jail' library (-ljail).])
 	LIBJAIL_LIB="-ljail"
 	], [])
-
-LIBELF_LIB="\$(top_builddir)/external/libelf.la"
-LIBELF_BUNDLED="libelf.la"
-LIBELF_INCLUDE="-I\$(top_srcdir)/external/libelf"
+	
+AC_SEARCH_LIBS([getprogname], [bsd], [
+	AC_DEFINE(HAVE_LIBBSD, 1, [Define to 1 if you have the 'bsd' library (-lbsd).])
+	LIBBSD_LIB="-lbsd"
+	], [])
 
 AC_CHECK_HEADERS([gelf.h libelf.h], [
 	AC_CHECK_TYPES([Elf_Note], [
 		AC_DEFINE(HAVE_GELF_H, 1, [Define to 1 if you have the <gelf.h> header file.])
 		AC_CHECK_LIB(elf, gelf_getehdr, [
 			AC_DEFINE(HAVE_LIBELF, 1, [Define to 1 if you have the 'elf' library (-lelf).])
-			LIBELF_LIB="-lelf"
-			LIBELF_BUNDLED=
-			LIBELF_INCLUDE=
+			libelf_bundled=no
 		]) dnl AC_CHECK_LIB
 	], dnl AC_CHECK_TYPES
 	[], AC_LANG_SOURCE(
@@ -197,34 +281,30 @@ AC_CHECK_HEADERS([gelf.h libelf.h], [
 	]])
 	)])
 
-AC_CHECK_HEADER([execinfo.h], [
-	AC_DEFINE(HAVE_EXECINFO_H, 1, [Define to 1 if you have the <execinfo.h> header file.])
-	AC_CHECK_LIB(execinfo, backtrace, [
-		AC_DEFINE(HAVE_LIBEXECINFO, 1, [Define to 1 if you have the 'execinfo' library (-lexecinfo).])
-		LIBEXECINFO_LIB="-lexecinfo"
-	])
-])
-
 AC_ARG_WITH([ldns], AS_HELP_STRING([--with-ldns], [Build with ldns for name resolving]))
 
 AS_IF([test "x$with_ldns" = "xyes"], [
-   PKG_CHECK_MODULES([LDNS], [libldns], [AC_DEFINE([HAVE_LDNS], [1], [Use ldns])],
+   PKG_CHECK_MODULES([LDNS], [libldns], [
+   	AC_DEFINE([HAVE_LDNS], [1], [Use ldns])
+   	AC_SUBST([HAVE_LDNS], [1], [Use ldns])
+   ],
    [
    	AC_CHECK_HEADER([ldns/ldns.h], [
    		AC_CHECK_LIB(ldns, ldns_resolver_new_frm_file, [
    			AC_DEFINE([HAVE_LDNS], [1], [Use ldns])
-   			AC_DEFINE([LDNS_LIBS], [-lldns], [LDNS library])
+   			AC_SUBST([HAVE_LDNS], [1], [Use ldns])
+   			AC_SUBST([LDNS_LIBS], [-lldns], [LDNS library])
    		])
    	])
    ])
+   AS_IF([test "x$HAVE_LDNS" != "x1"],
+	[AC_MSG_ERROR([Unable to find the libdns])])
 ])
 
-AC_CHECK_HEADER([sys/capability.h], [
-        AC_CHECK_LIB(c, cap_sandboxed, [
-                AC_DEFINE(HAVE_CAPSICUM, 1, [Define 1 if you have 'capsicum'.])
-        ])
-
+AC_CHECK_LIB(c, cap_sandboxed, [
+   AC_DEFINE(HAVE_CAPSICUM, 1, [Define 1 if you have 'capsicum'.])
 ])
+
 
 AC_CACHE_CHECK(for arc4random_uniform,
                ac_cv_func_arc4random_uniform,
@@ -236,14 +316,74 @@ if test "$ac_cv_func_arc4random_uniform" = yes ; then
 	AC_DEFINE(HAVE_ARC4RANDOM, 1, [Define 1 if you have 'arc4random_uniform' function.])
 fi
 
-AC_SUBST([LIBELF_LIB])
-AC_SUBST([LIBELF_BUNDLED])
-AC_SUBST([LIBELF_INCLUDE])
-AC_SUBST([LIBSBUF_LIB])
-AC_SUBST([LIBSBUF_BUNDLED])
-AC_SUBST([LIBSBUF_INCLUDE])
+AC_CACHE_CHECK(for BSD dirname(const char *),
+               ac_cv_func_dirname,
+               [ac_save_CFLAGS="$CFLAGS"
+		CFLAGS="-Werror $CFLAGS"
+		AC_TRY_COMPILE([#include <libgen.h>],
+                               [static char *(*ac_test_dirname)(const char *) = dirname; ac_test_dirname("");],
+                               [ac_cv_func_dirname=yes],
+                               [ac_cv_func_dirname=no])
+		CFLAGS="$ac_save_CFLAGS"])
+if test "$ac_cv_func_dirname" = yes ; then
+	AC_DEFINE(HAVE_BSD_DIRNAME, 1, [Define 1 if you have 'dirname(const char *)' function.])
+fi
+
+AC_CHECK_FUNCS(basename_r)
+AC_CACHE_CHECK(for BSD basename(const char *),
+               ac_cv_func_basename,
+               [ac_save_CFLAGS="$CFLAGS"
+		CFLAGS="-Werror $CFLAGS"
+		AC_TRY_COMPILE([#include <libgen.h>],
+                               [static char *(*ac_test_basename)(const char *) = basename; ac_test_basename("");],
+                               [ac_cv_func_basename=yes],
+                               [ac_cv_func_basename=no])
+		CFLAGS="$ac_save_CFLAGS"])
+if test "$ac_cv_func_basename" = yes ; then
+	AC_DEFINE(HAVE_BSD_BASENAME, 1, [Define 1 if you have 'basename(const char *)' function.])
+fi
+
+AC_MSG_CHECKING([for /proc/pid/fd directory])
+if test -d "/proc/$$/fd" ; then
+        AC_DEFINE([HAVE_PROC_PID], [1], [Define if you have /proc/$pid/fd])
+        AC_MSG_RESULT([yes])
+else
+        AC_MSG_RESULT([no])
+fi
+
+AC_CHECK_DECL([F_CLOSEM],
+        AC_DEFINE([HAVE_FCNTL_CLOSEM], [1], [Use F_CLOSEM fcntl for closefrom]),
+        [],
+        [ #include <limits.h>
+          #include <fcntl.h> ]
+)
+
+AC_MSG_CHECKING([whether we should only build the static version of pkg])
+AC_ARG_WITH([staticonly],
+	      [AS_HELP_STRING([--with-staticonly],
+			      [Only build the static version (default is no)])])
+
+if test "$with_staticonly" = "yes"; then
+	AC_MSG_RESULT([yes])
+else
+	AC_MSG_RESULT([no])
+fi
+
+AM_CONDITIONAL(DYNAMIC, test "$with_staticonly" != "no")
+
+dnl Select appropriate ABI
+AS_CASE(
+	[$host_os],
+	[darwin*],
+	[ac_cv_binary_abi=macho],
+	[ac_cv_binary_abi=elf]
+)
+AM_CONDITIONAL(HAVE_MACHO_ABI, test "$ac_cv_binary_abi" = "macho")
+AM_CONDITIONAL(HAVE_ELF_ABI, test "$ac_cv_binary_abi" = "elf")
+AM_CONDITIONAL(LIBELF_BUNDLED, test "$ac_cv_binary_abi" = "elf" -a "$libelf_bundled" != "no")
+
 AC_SUBST([LIBJAIL_LIB])
-AC_SUBST([LIBEXECINFO_LIB])
+AC_SUBST([LIBBSD_LIB])
 AC_SUBST([TESTS])
 AC_SUBST([LDNS_LIBS])
 AC_SUBST([LDNS_CFLAGS])
@@ -280,9 +420,11 @@ AC_SUBST([REPOS_LDADD_STATIC])
 AC_CONFIG_FILES(Makefile \
 		src/Makefile \
 		external/Makefile \
+		external/blake2/Makefile \
 		scripts/Makefile \
 		docs/Makefile \
 		tests/Makefile \
+		compat/Makefile \
 		libpkg/Makefile \
 		libpkg/repo/Makefile \
 		libpkg/pkg.h \

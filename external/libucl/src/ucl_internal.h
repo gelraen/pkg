@@ -163,6 +163,7 @@ struct ucl_chunk {
 	size_t remain;
 	unsigned int line;
 	unsigned int column;
+	unsigned priority;
 	struct ucl_chunk *next;
 };
 
@@ -182,7 +183,7 @@ struct ucl_variable {
 	char *value;
 	size_t var_len;
 	size_t value_len;
-	struct ucl_variable *next;
+	struct ucl_variable *prev, *next;
 };
 
 struct ucl_parser {
@@ -192,7 +193,7 @@ struct ucl_parser {
 	int flags;
 	ucl_object_t *top_obj;
 	ucl_object_t *cur_obj;
-	const char *cur_file;
+	char *cur_file;
 	struct ucl_macro *macroes;
 	struct ucl_stack *stack;
 	struct ucl_chunk *chunks;
@@ -223,9 +224,11 @@ size_t ucl_unescape_json_string (char *str, size_t len);
  * @param err error ptr
  * @return
  */
-bool ucl_include_handler (const unsigned char *data, size_t len, void* ud);
+bool ucl_include_handler (const unsigned char *data, size_t len,
+		const ucl_object_t *args, void* ud);
 
-bool ucl_try_include_handler (const unsigned char *data, size_t len, void* ud);
+bool ucl_try_include_handler (const unsigned char *data, size_t len,
+		const ucl_object_t *args, void* ud);
 
 /**
  * Handle includes macro
@@ -235,7 +238,8 @@ bool ucl_try_include_handler (const unsigned char *data, size_t len, void* ud);
  * @param err error ptr
  * @return
  */
-bool ucl_includes_handler (const unsigned char *data, size_t len, void* ud);
+bool ucl_includes_handler (const unsigned char *data, size_t len,
+		const ucl_object_t *args, void* ud);
 
 size_t ucl_strlcpy (char *dst, const char *src, size_t siz);
 size_t ucl_strlcpy_unsafe (char *dst, const char *src, size_t siz);
@@ -335,14 +339,17 @@ ucl_hash_search_obj (ucl_hash_t* hashlin, ucl_object_t *obj)
 	return (const ucl_object_t *)ucl_hash_search (hashlin, obj->key, obj->keylen);
 }
 
-static inline ucl_hash_t *
-ucl_hash_insert_object (ucl_hash_t *hashlin, const ucl_object_t *obj) UCL_WARN_UNUSED_RESULT;
+static inline ucl_hash_t * ucl_hash_insert_object (ucl_hash_t *hashlin,
+		const ucl_object_t *obj,
+		bool ignore_case) UCL_WARN_UNUSED_RESULT;
 
 static inline ucl_hash_t *
-ucl_hash_insert_object (ucl_hash_t *hashlin, const ucl_object_t *obj)
+ucl_hash_insert_object (ucl_hash_t *hashlin,
+		const ucl_object_t *obj,
+		bool ignore_case)
 {
 	if (hashlin == NULL) {
-		hashlin = ucl_hash_create ();
+		hashlin = ucl_hash_create (ignore_case);
 	}
 	ucl_hash_insert (hashlin, obj, obj->key, obj->keylen);
 

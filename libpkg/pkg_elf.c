@@ -48,7 +48,7 @@
 #include <fcntl.h>
 #include <gelf.h>
 #include <libgen.h>
-#if defined(HAVE_LINK_H) && !defined(__DragonFly__)
+#if defined(HAVE_LINK_H) && !defined(__DragonFly__) && defined(HAVE_LIBELF)
 #include <link.h>
 #endif
 #include <paths.h>
@@ -58,6 +58,8 @@
 #ifdef HAVE_LIBELF
 #include <libelf.h>
 #endif
+
+#include <bsd_compat.h>
 
 #include "pkg.h"
 #include "private/pkg.h"
@@ -104,7 +106,6 @@ static int
 add_shlibs_to_pkg(__unused void *actdata, struct pkg *pkg, const char *fpath,
 		  const char *name, bool is_shlib)
 {
-	const char *pkgname, *pkgversion;
 	struct pkg_file *file = NULL;
 	const char *filepath;
 
@@ -115,10 +116,12 @@ add_shlibs_to_pkg(__unused void *actdata, struct pkg *pkg, const char *fpath,
 	case EPKG_END:		/* A system library */
 		return (EPKG_OK);
 	default:
-		/* Ignore link resolution errors if we're analysing a
-		   shared library. */
-		if (is_shlib)
+		/* Report link resolution errors in shared library. */
+		if (is_shlib) {
+			pkg_emit_error("(%s-%s) %s - shared library %s not found",
+			      pkg->name, pkg->version, fpath, name);
 			return (EPKG_OK);
+		}
 
 		while (pkg_files(pkg, &file) == EPKG_OK) {
 			filepath = file->path;
@@ -128,9 +131,8 @@ add_shlibs_to_pkg(__unused void *actdata, struct pkg *pkg, const char *fpath,
 			}
 		}
 
-		pkg_get(pkg, PKG_NAME, &pkgname, PKG_VERSION, &pkgversion);
 		pkg_emit_notice("(%s-%s) %s - required shared library %s not "
-		    "found", pkgname, pkgversion, fpath, name);
+		    "found", pkg->name, pkg->version, fpath, name);
 
 		return (EPKG_FATAL);
 	}
@@ -232,10 +234,8 @@ analyse_elf(struct pkg *pkg, const char *fpath,
 	const char *myarch;
 	const char *shlib;
 
-	bool developer = false;
 	bool is_shlib = false;
 
-	developer = pkg_object_bool(pkg_config_get("DEVELOPER_MODE"));
 	myarch = pkg_object_string(pkg_config_get("ABI"));
 
 	int fd;
@@ -263,7 +263,7 @@ analyse_elf(struct pkg *pkg, const char *fpath,
 		goto cleanup;
 	}
 
-	if (developer)
+	if (developer_mode)
 		pkg->flags |= PKG_CONTAINS_ELF_OBJECTS;
 
 	if (gelf_getehdr(e, &elfhdr) == NULL) {
@@ -379,7 +379,7 @@ analyse_elf(struct pkg *pkg, const char *fpath,
 			continue;
 		
 		shlib_list_from_rpath(elf_strptr(e, sh_link, dyn->d_un.d_val),
-				      dirname(fpath));
+				      bsd_dirname(fpath));
 		break;
 	}
 	if (!is_shlib) {
@@ -389,7 +389,7 @@ analyse_elf(struct pkg *pkg, const char *fpath,
 		 */
 		if (elfhdr.e_type == ET_DYN) {
 			is_shlib = true;
-			pkg_addshlib_provided(pkg, basename(fpath));
+			pkg_addshlib_provided(pkg, bsd_basename(fpath));
 		}
 	}
 
@@ -448,10 +448,7 @@ pkg_analyse_files(struct pkgdb *db, struct pkg *pkg, const char *stage)
 	struct pkg_shlib *sh, *shtmp, *found;
 	int ret = EPKG_OK;
 	char fpath[MAXPATHLEN];
-	const char *origin;
-	bool developer = false, failures = false;
-
-	developer = pkg_object_bool(pkg_config_get("DEVELOPER_MODE"));
+	bool failures = false;
 
 	pkg_list_free(pkg, PKG_SHLIBS_REQUIRED);
 	pkg_list_free(pkg, PKG_SHLIBS_PROVIDED);
@@ -466,7 +463,7 @@ pkg_analyse_files(struct pkgdb *db, struct pkg *pkg, const char *stage)
 		goto cleanup;
 
 	/* Assume no architecture dependence, for contradiction */
-	if (developer)
+	if (developer_mode)
 		pkg->flags &= ~(PKG_CONTAINS_ELF_OBJECTS |
 				PKG_CONTAINS_STATIC_LIBS |
 				PKG_CONTAINS_H_OR_LA);
@@ -478,7 +475,7 @@ pkg_analyse_files(struct pkgdb *db, struct pkg *pkg, const char *stage)
 			strlcpy(fpath, file->path, sizeof(fpath));
 
 		ret = analyse_elf(pkg, fpath, add_shlibs_to_pkg, db);
-		if (developer) {
+		if (developer_mode) {
 			if (ret != EPKG_OK && ret != EPKG_END) {
 				failures = true;
 				continue;
@@ -487,16 +484,15 @@ pkg_analyse_files(struct pkgdb *db, struct pkg *pkg, const char *stage)
 		}
 	}
 
-	pkg_get(pkg, PKG_ORIGIN, &origin);
 	/*
 	 * Do not depend on libraries that a package provides itself
 	 */
 	HASH_ITER(hh, pkg->shlibs_required, sh, shtmp) {
-		HASH_FIND_STR(pkg->shlibs_provided, pkg_shlib_name(sh), found);
+		HASH_FIND_STR(pkg->shlibs_provided, sh->name, found);
 		if (found != NULL) {
 			pkg_debug(2, "remove %s from required shlibs as the "
 			    "package %s provides this library itself",
-			    pkg_shlib_name(sh), origin);
+			    sh->name, pkg->name);
 			HASH_DEL(pkg->shlibs_required, sh);
 		}
 	}
@@ -505,7 +501,7 @@ pkg_analyse_files(struct pkgdb *db, struct pkg *pkg, const char *stage)
 	 * if the package is not supposed to provide share libraries then
 	 * drop the provided one
 	 */
-	if (pkg_getannotation(pkg, "no_provide_shlib") != NULL)
+	if (pkg_kv_get(&pkg->annotations, "no_provide_shlib") != NULL)
 		HASH_FREE(pkg->shlibs_provided, pkg_shlib_free);
 
 	if (failures)
@@ -742,7 +738,7 @@ pkg_get_myarch_elfparse(char *dest, size_t sz)
 		src += sizeof(Elf_Note);
 		if (note.n_type == NT_VERSION)
 			break;
-		src += note.n_namesz + note.n_descsz;
+		src += roundup2(note.n_namesz + note.n_descsz, 4);
 	}
 	if ((uintptr_t)src >= ((uintptr_t)data->d_buf + data->d_size)) {
 		ret = EPKG_FATAL;
@@ -944,6 +940,7 @@ pkg_get_myarch_legacy(char *dest, size_t sz)
 	return (0);
 }
 
+#ifndef __DragonFly__
 int
 pkg_get_myarch(char *dest, size_t sz)
 {
@@ -975,41 +972,5 @@ pkg_get_myarch(char *dest, size_t sz)
 
 	return (0);
 }
+#endif
 
-int
-pkg_suggest_arch(struct pkg *pkg, const char *arch, bool isdefault)
-{
-	bool iswildcard;
-
-	iswildcard = (strchr(arch, 'c') != NULL);
-
-	if (iswildcard && isdefault)
-		pkg_emit_developer_mode("Configuration error: arch \"%s\" "
-		    "cannot use wildcards as default", arch);
-
-	if (pkg->flags & (PKG_CONTAINS_ELF_OBJECTS|PKG_CONTAINS_STATIC_LIBS)) {
-		if (iswildcard) {
-			/* Definitely has to be arch specific */
-			pkg_emit_developer_mode("Error: arch \"%s\" -- package "
-			    "installs architecture specific files", arch);
-		}
-	} else {
-		if (pkg->flags & PKG_CONTAINS_H_OR_LA) {
-			if (iswildcard) {
-				/* Could well be arch specific */
-				pkg_emit_developer_mode("Warning: arch \"%s\" "
-				    "-- package installs C/C++ headers or "
-				    "libtool files,\n**** which are often "
-				    "architecture specific", arch);
-			}
-		} else {
-			/* Might be arch independent */
-			if (!iswildcard)
-				pkg_emit_developer_mode("Notice: arch \"%s\" -- "
-				    "no architecture specific files found:\n"
-				    "**** could this package use a wildcard "
-				    "architecture?", arch);
-		}
-	}
-	return (EPKG_OK);
-}

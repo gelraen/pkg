@@ -26,7 +26,12 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "pkg_config.h"
+
 #include <sys/wait.h>
+#ifdef HAVE_SYS_PROCCTL_H
+#include <sys/procctl.h>
+#endif
 
 #include <assert.h>
 #include <errno.h>
@@ -49,7 +54,7 @@ pkg_script_run(struct pkg * const pkg, pkg_script type)
 	size_t i, j;
 	int error, pstat;
 	pid_t pid;
-	const char *prefix, *script_cmd_p;
+	const char *script_cmd_p;
 	const char *argv[4];
 	char **ep;
 	int ret = EPKG_OK;
@@ -60,6 +65,10 @@ pkg_script_run(struct pkg * const pkg, pkg_script type)
 	ssize_t bytes_written;
 	size_t script_cmd_len;
 	long argmax;
+#ifdef PROC_REAP_KILL
+	struct procctl_reaper_status info;
+	struct procctl_reaper_kill killemall;
+#endif
 
 	struct {
 		const char * const arg;
@@ -78,8 +87,6 @@ pkg_script_run(struct pkg * const pkg, pkg_script type)
 	if (!pkg_object_bool(pkg_config_get("RUN_SCRIPTS")))
 		return (EPKG_OK);
 
-	pkg_get(pkg, PKG_PREFIX, &prefix);
-
 	for (i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
 		if (map[i].a == type)
 			break;
@@ -87,12 +94,15 @@ pkg_script_run(struct pkg * const pkg, pkg_script type)
 
 	assert(i < sizeof(map) / sizeof(map[0]));
 
+#ifdef PROC_REAP_KILL
+	procctl(P_PID, getpid(), PROC_REAP_ACQUIRE, NULL);
+#endif
 	for (j = 0; j < PKG_NUM_SCRIPTS; j++) {
 		if (pkg_script_get(pkg, j) == NULL)
 			continue;
 		if (j == map[i].a || j == map[i].b) {
 			sbuf_reset(script_cmd);
-			setenv("PKG_PREFIX", prefix, 1);
+			setenv("PKG_PREFIX", pkg->prefix, 1);
 			debug = pkg_object_bool(pkg_config_get("DEBUG_SCRIPTS"));
 			if (debug)
 				sbuf_printf(script_cmd, "set -x\n");
@@ -193,6 +203,17 @@ cleanup:
 		close(stdin_pipe[0]);
 	if (stdin_pipe[1] != -1)
 		close(stdin_pipe[1]);
+
+#ifdef PROC_REAP_KILL
+	procctl(P_PID, getpid(), PROC_REAP_STATUS, &info);
+	if (info.rs_children != 0) {
+		killemall.rk_sig = SIGKILL;
+		killemall.rk_flags = 0;
+		if (procctl(P_PID, getpid(), PROC_REAP_KILL, &killemall) != 0)
+			pkg_emit_error("Fail to kill children of the scripts");
+	}
+	procctl(P_PID, getpid(), PROC_REAP_RELEASE, NULL);
+#endif
 
 	return (ret);
 }
